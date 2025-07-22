@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+langchain
+langchain-community
+ollama
+faiss-cpu
+sentence-transformers
+pypdf
+sqlalchemy
+pydantic
+python-dotenv
