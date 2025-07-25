@@ -24,3 +24,5 @@ pycache/ *.pyc *.pyo *.pyd .Python env/ venv/ ENV/ env.bak/ venv.bak/
 __pycache__
 _pycache_/
 venv
+vectorstore/
+data/

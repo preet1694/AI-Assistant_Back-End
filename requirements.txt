@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 langchain
 langchain-community
+langchain-google-genai
 ollama
 faiss-cpu
 sentence-transformers
