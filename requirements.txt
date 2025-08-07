@@ -9,4 +9,5 @@ sentence-transformers
 pypdf
 sqlalchemy
 pydantic
+pydantic-settings
 python-dotenv

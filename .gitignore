@@ -26,3 +26,4 @@ _pycache_/
 venv
 vectorstore/
 data/
+college.db
