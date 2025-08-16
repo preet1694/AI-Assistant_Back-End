@@ -1,86 +1,107 @@
+"""
+A robust query service that combines fast,
+accurate database lookups with the broad knowledge of the RAG system.
+"""
 import re
 from sqlalchemy.orm import Session, joinedload
 from app.db.models import User, Attendance
-from app.services.rag_service import get_rag_response
+from app.services.rag_service import get_rag_chain
 
-def find_user_by_id(db: Session, identifier: str):
-    """Finds a user by their exam_no or student_id."""
-    identifier = identifier.upper()
-    return db.query(User).filter(
-        (User.exam_no == identifier) | (User.student_id == identifier)
-    ).options(joinedload(User.attendance)).first()
+class QueryService:
+    def __init__(self):
+        print("Initializing QueryService and loading the RAG chain...")
+        self.rag_chain = get_rag_chain()
+        if self.rag_chain:
+            print("RAG chain loaded successfully.")
+        else:
+            print("Error: RAG chain could not be loaded.")
 
-def find_user_by_name(db: Session, name: str):
-    """
-    Finds a user by their full name.
-    This performs an exact case-insensitive match for better accuracy.
-    """
-    return db.query(User).filter(User.name.ilike(name)).first()
-
-def handle_query_logic(query: str, role: str, db: Session):
-    """
-    Handles user queries by implementing a hybrid search strategy.
-    The logic is prioritized to handle natural language first.
-    """
-    query_lower = query.lower()
-    
-    # --- Priority 1: Check for relational name queries ---
-    if 'after' in query_lower and ('names' in query_lower or 'students' in query_lower):
-        print("DEBUG: Relational query keywords ('after', 'names'/'students') detected.")
-        try:
-            name_to_find = query_lower.split("after", 1)[1].strip()
-            print(f"DEBUG: Attempting to find student by name: '{name_to_find}'")
-            
-            anchor_user = find_user_by_name(db, name_to_find)
-            if not anchor_user:
-                return f"I'm sorry, I couldn't find a student named '{name_to_find}'. Please check the spelling and provide their full name."
-
-            next_students = db.query(User).filter(User.id > anchor_user.id).order_by(User.id).limit(5).all()
-            if not next_students:
-                return f"{anchor_user.name} is the last student in the list I have."
-
-            student_list = "\n".join([f"- {s.name} ({s.exam_no})" for s in next_students])
-            return f"Of course! Here are the next few students after {anchor_user.name}:\n{student_list}"
-
-        except IndexError:
-            print("DEBUG: Relational keywords found, but could not extract a name. Falling back to RAG.")
-            return get_rag_response(query)
-
-    # --- Priority 2: Check if the entire query is a student's name ---
-    # This runs before the ID check to avoid parts of names being mistaken for IDs.
-    print(f"DEBUG: Checking if '{query}' is a student name.")
-    user_by_name = find_user_by_name(db, query.strip())
-    if user_by_name:
-        print(f"DEBUG: Found user '{user_by_name.name}' by full name query.")
-        return f"I found a student named {user_by_name.name} (Exam No: {user_by_name.exam_no}). What would you like to know about them? You can ask for their attendance, student ID, etc."
-
-    # --- Priority 3: Check for specific ID lookups ---
-    # This regex is now more specific to avoid matching parts of names.
-    id_pattern = r'\b(IT\d{3,}|(?=\S*[A-Z])(?=\S*\d)\S{8,})\b'
-    potential_ids = re.findall(id_pattern, query, re.IGNORECASE)
-
-    if potential_ids:
-        identifier = potential_ids[0]
-        print(f"DEBUG: Identifier found: '{identifier}'. Querying SQL database.")
-        user = find_user_by_id(db, identifier)
+    def _find_user(self, db: Session, identifier: str):
+        """Finds a user by their name, exam_no, or student_id."""
+        # Search by exam_no or student_id first for exact matches
+        user = db.query(User).filter(
+            (User.exam_no.ilike(identifier)) | (User.student_id.ilike(identifier))
+        ).options(joinedload(User.attendance)).first()
         if user:
-            # Handle specific intents for the found user
-            if 'name' in query_lower:
-                return f"Of course, the name for that ID is {user.name}."
+            return user
+        # If no exact match, search by name (case-insensitive)
+        return db.query(User).filter(User.name.ilike(f"%{identifier}%")).options(joinedload(User.attendance)).first()
+
+    def _try_database_lookup(self, query: str, db: Session):
+        """
+        Attempts to parse the query for specific, fact-based questions
+        that can be answered by the database. Returns an answer string if
+        successful, otherwise returns None.
+        """
+        query_lower = query.lower()
+        
+        # Regex to find potential identifiers (Exam No, Student ID, or a Name)
+        # Looks for an ID or a name following keywords like 'of' or 'for'.
+        id_pattern = r'\b(IT\d{3}|22ITU\S+)\b'
+        name_pattern = r'\b(?:of|for|is|named)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\b'
+
+        potential_id = re.search(id_pattern, query, re.IGNORECASE)
+        potential_name = re.search(name_pattern, query, re.IGNORECASE)
+
+        identifier = None
+        if potential_id:
+            identifier = potential_id.group(1)
+        elif potential_name:
+            identifier = potential_name.group(1)
+        # As a last resort, treat the whole query as a potential name if it's simple
+        elif len(query.split()) <= 3:
+             identifier = query
+        
+        if not identifier:
+            return None
+
+        print(f"DEBUG: Identifier '{identifier}' found. Querying SQL database.")
+        user = self._find_user(db, identifier)
+        
+        if user:
+            # If a user is found, answer based on the intent in the query
             if 'attendance' in query_lower:
                 if not user.attendance:
                     return f"I couldn't find any attendance records for {user.name}."
                 attendance_list = "\n".join([f"- {att.subject}: {att.percentage}%" for att in user.attendance])
                 return f"Certainly! Here is the attendance for {user.name}:\n{attendance_list}"
+            
             if 'student id' in query_lower:
-                return f"The student ID for {user.name} is {user.student_id}." if user.student_id else f"I'm sorry, I don't have a Student ID on file for {user.name}."
-            if 'exam no' in query_lower or 'exam number' in query_lower:
-                return f"You got it! The exam number for {user.name} is {user.exam_no}."
-            return f"That ID belongs to {user.name}. What would you like to know about them?"
-        else:
-            print(f"DEBUG: Identifier '{identifier}' not in SQL DB. Falling back to RAG.")
-            return get_rag_response(query)
+                return f"The student ID for {user.name} is {user.student_id}." if user.student_id else f"I don't have a Student ID on file for {user.name}."
 
-    # --- Priority 4: Fallback to RAG for all other general queries ---
-    print("DEBUG: No structured query matches found. Using RAG for a general query.")
-    return get_rag_response(query)
+            if 'exam no' in query_lower or 'exam number' in query_lower:
+                return f"The exam number for {user.name} is {user.exam_no}."
+
+            # Default response if a user is found but intent is unclear
+            return f"I found a student: {user.name} (Exam No: {user.exam_no}). What would you like to know about them? (e.g., 'What is their attendance?')"
+        
+        return None # No user found in the database
+
+    def handle_query(self, query: str, db: Session, role: str = "guest"):
+        """
+        Processes a user's query using a hybrid strategy.
+        """
+        # --- Priority 1: Attempt a direct database lookup ---
+        db_answer = self._try_database_lookup(query, db)
+        if db_answer:
+            print("DEBUG: Answered successfully from the database.")
+            return db_answer
+
+        # --- Priority 2: RAG Fallback ---
+        print("DEBUG: No structured query match. Using RAG for a general answer.")
+        if not self.rag_chain:
+            return "I'm sorry, my knowledge base is currently unavailable. Please try again later."
+        
+        try:
+            response = self.rag_chain.invoke(query)
+            return response.strip()
+        except Exception as e:
+            print(f"An error occurred while invoking the RAG chain: {e}")
+            return "I encountered an error while processing your request. Please try again."
+
+# --- Integration with your FastAPI Endpoints ---
+query_service_instance = QueryService()
+
+def handle_query_logic(query: str, role: str, db: Session):
+    """Entry point for the FastAPI endpoint."""
+    return query_service_instance.handle_query(query, db, role)

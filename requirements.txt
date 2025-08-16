@@ -3,11 +3,12 @@ uvicorn[standard]
 langchain
 langchain-community
 langchain-google-genai
-ollama
+langchain-huggingface
 faiss-cpu
 sentence-transformers
 pypdf
-sqlalchemy
-pydantic
 pydantic-settings
 python-dotenv
+PyMuPDF
+google-generativeai
+Pillow
