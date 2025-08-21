@@ -2,21 +2,28 @@ import os
 import re
 import sys
 import fitz
+import camelot
+import pandas as pd
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.docstore.document import Document
+from typing import List, Dict, Tuple, Optional
 
+# Ensure the app module can be found
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from app.core.config import settings
 
-
+# --- Configuration ---
 DATA_PATH = "data/"
 DB_FAISS_PATH = "vectorstore/"
 EMBEDDING_MODEL = 'BAAI/bge-large-en-v1.5'
 
-def load_student_data(file_path):
+# --- Helper Functions ---
+
+def load_student_data(file_path: str) -> List[Dict]:
+    """Parses the student roll numbers PDF."""
     print(f"Loading student data from: {file_path}")
     students = []
     try:
@@ -25,7 +32,7 @@ def load_student_data(file_path):
         pattern = re.compile(r'(IT\d{3})[",\s]+?([0-9A-Z]+)\s+([A-Z\s]+)(?=\s*IT\d{3}|$)')
         matches = pattern.findall(text.replace('\n', ' '))
         for exam_no, student_id, name in matches:
-            if "ITU" in student_id:
+            if "ITU" in student_id or "ECU" in student_id:
                 students.append({"exam_no": exam_no.strip(), "student_id": student_id.strip(), "name": name.strip().replace("  ", " ")})
             else:
                 new_name = f"{student_id} {name}".strip()
@@ -36,8 +43,8 @@ def load_student_data(file_path):
         print(f"An error occurred while parsing student data: {e}")
         return []
 
-
-def load_batch_allocations(file_path):
+def load_batch_allocations(file_path: str) -> List[Dict]:
+    """Parses the batch allocation PDF."""
     print(f"Loading batch allocations from: {file_path}")
     allocations = []
     try:
@@ -53,56 +60,77 @@ def load_batch_allocations(file_path):
         print(f"Error loading batch allocations: {e}")
         return []
 
-def get_batch_for_student(exam_no, allocations):
-    student_id_num = int(exam_no.replace("IT", ""))
-    for alloc in allocations:
-        if alloc["from_id"] <= student_id_num <= alloc["to_id"]:
-            return alloc["batch"], alloc["counselor"]
+def get_batch_for_student(exam_no: str, allocations: List[Dict]) -> Tuple[Optional[str], Optional[str]]:
+    """Matches a student's exam number to their allocated batch and counselor."""
+    try:
+        student_id_num = int(exam_no.replace("IT", ""))
+        for alloc in allocations:
+            if alloc["from_id"] <= student_id_num <= alloc["to_id"]:
+                return alloc["batch"], alloc["counselor"]
+    except ValueError:
+        return None, None
     return None, None
 
-
-def parse_timetable_pdf(file_path, division):
-    print(f"Locally parsing timetable for Division {division} from: {file_path}")
+def parse_timetable_with_camelot(file_path: str, division: str) -> List[Document]:
+    """
+    Parses a timetable PDF using the Camelot library for robust table extraction.
+    This corrected version uses a more flexible logic to handle variations in
+    table layouts and headers, and fixes the pandas ambiguity error by using
+    index-based access instead of label-based access.
+    """
+    print(f"Parsing timetable for Division {division} with Camelot from: {file_path}")
     documents = []
     try:
-        doc = fitz.open(file_path)
-        page = doc[0]
-        words = page.get_text("words")
+        tables = camelot.read_pdf(file_path, pages='1', flavor='lattice')
+        if not tables:
+            print(f"Warning: Camelot could not find any tables in {file_path}")
+            return []
 
-        time_slots = {
-            "08:30 AM - 09:30 AM": 100, "09:30 AM - 10:30 AM": 160,
-            "10:45 AM - 11:45 AM": 220, "11:45 AM - 12:45 PM": 280,
-            "01:30 PM - 02:30 PM": 340, "02:30 PM - 03:30 PM": 400,
-            "03:30 PM - 04:30 PM": 460, "04:30 PM - 05:30 PM": 520
-        }
-        
-        lines = {}
-        for x0, y0, x1, y1, word, _, _, _ in words:
-            y_key = round(y0)
-            if y_key not in lines:
-                lines[y_key] = []
-            lines[y_key].append((x0, word))
+        df = tables[0].df
 
-        sorted_lines = sorted(lines.items())
-        
-        current_day = None
-        for _, line_words in sorted_lines:
-            line_words.sort()
-            
-            line_text = " ".join(w for _, w in line_words)
-            day_match = re.search(r'\b(Monday|Tuesday|Wednesday|Thursday|Friday)\b', line_text)
-            if day_match:
-                current_day = day_match.group(1)
+        # --- Corrected Header and Data Detection Logic ---
 
-            if not current_day:
+        # First, clean the entire dataframe to handle multi-line cells
+        # Use .map() instead of the deprecated .applymap()
+        df_cleaned = df.map(lambda x: str(x).replace('\n', ' ').strip())
+
+        data_start_index = -1
+        days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+        # Find the first row that contains a day of the week, which marks the start of the actual data
+        for i, row in df_cleaned.iterrows():
+            # Check the actual string value in the first cell of the row
+            if any(day in row.iloc[0] for day in days_of_week):
+                data_start_index = i
+                break
+
+        if data_start_index == -1:
+            print(f"Error: Could not find the starting data row (e.g., 'Monday') for Division {division}.")
+            return []
+
+        # The header is the row right before the data starts
+        header_row = df_cleaned.iloc[data_start_index - 1]
+        data_df = df_cleaned.iloc[data_start_index:]
+
+        # Iterate through the data rows
+        for _, row in data_df.iterrows():
+            day = row.iloc[0]
+            # Skip any rows that are not actual days
+            if not any(d in day for d in days_of_week):
                 continue
 
-            for time, x_start in time_slots.items():
-                slot_words = [w for x, w in line_words if x_start <= x < x_start + 60]
-                if slot_words:
-                    details = " ".join(slot_words)
+            # Iterate through the cells of the row, starting from the second cell (index 1)
+            for i in range(1, len(row)):
+                details = row.iloc[i]
+                time = header_row.iloc[i] # Get corresponding time from the header row
+
+                if details and time: # Ensure both details and time slot are present
                     session_type = "Lab" if re.search(r'[EF]\d-', details) else "Lecture"
-                    content = f"Timetable Information. Type: {session_type}. For Division {division} on {current_day} during {time}, the schedule is: {details}."
+                    content = (
+                        f"Timetable Information. Type: {session_type}. "
+                        f"For Division {division} on {day}, during the {time} slot, "
+                        f"the schedule is: {details}."
+                    )
                     doc = Document(
                         page_content=content,
                         metadata={"source": os.path.basename(file_path), "record_type": "timetable_entry"}
@@ -112,11 +140,12 @@ def parse_timetable_pdf(file_path, division):
         print(f"Successfully created {len(documents)} timetable documents for Division {division}.")
         return documents
     except Exception as e:
-        print(f"An error occurred while parsing timetable {file_path}: {e}")
+        print(f"An error occurred while parsing timetable {file_path} with Camelot: {e}")
         return []
 
 
-def chunk_syllabus_pdf(file_path):
+def chunk_syllabus_pdf(file_path: str) -> List[Document]:
+    """Loads and chunks the unstructured syllabus PDF."""
     print(f"Chunking unstructured syllabus from: {file_path}")
     try:
         loader = PyMuPDFLoader(file_path)
@@ -129,10 +158,17 @@ def chunk_syllabus_pdf(file_path):
         print(f"Error chunking {file_path}: {e}")
         return []
 
-
 def create_master_vector_db():
+    """
+    Orchestrates the entire data ingestion process:
+    1. Loads and enriches student data.
+    2. Parses timetables using Camelot.
+    3. Chunks the syllabus.
+    4. Creates and saves a FAISS vector store.
+    """
     all_docs = []
     
+    # --- 1. Enriched Student Profiles ---
     students = load_student_data(os.path.join(DATA_PATH, "6_Roll Numbers.pdf"))
     allocations = load_batch_allocations(os.path.join(DATA_PATH, "7_IT_2025_BATCH ALLOCATION.pdf"))
 
@@ -140,22 +176,34 @@ def create_master_vector_db():
     for student in students:
         exam_no = student["exam_no"]
         batch, counselor = get_batch_for_student(exam_no, allocations)
-        content = (f"Student Profile. Full Name: {student['name']}. Exam Number: {exam_no}. Student ID: {student.get('student_id', 'Not Available')}.")
+        content = (f"Student Profile. Full Name: {student['name']}. "
+                   f"Exam Number: {exam_no}. "
+                   f"Student ID: {student.get('student_id', 'Not Available')}.")
         if batch and counselor:
             content += f" Batch: {batch}. Faculty Counselor: {counselor}."
         doc = Document(page_content=content, metadata={"source": "Multiple Files", "record_type": "student_profile"})
         all_docs.append(doc)
     print(f"Successfully created {len(students)} enriched student profiles.")
 
-    all_docs.extend(parse_timetable_pdf(os.path.join(DATA_PATH, "7_IT_E_2025.pdf"), division="E"))
-    all_docs.extend(parse_timetable_pdf(os.path.join(DATA_PATH, "7_IT_F_2025.pdf"), division="F"))
+    # --- 2. Timetable Parsing (using Camelot) ---
+    all_docs.extend(parse_timetable_with_camelot(os.path.join(DATA_PATH, "7_IT_E_2025.pdf"), division="E"))
+    all_docs.extend(parse_timetable_with_camelot(os.path.join(DATA_PATH, "7_IT_F_2025.pdf"), division="F"))
+    
+    # --- 3. Syllabus Chunking ---
     all_docs.extend(chunk_syllabus_pdf(os.path.join(DATA_PATH, "BTech IT 2025-2029 Syllabus File.pdf")))
     
+    # --- 4. Vector Store Creation ---
     print(f"\nTotal documents and chunks to be embedded: {len(all_docs)}")
+    if not all_docs:
+        print("No documents were generated. Aborting vector store creation.")
+        return
+        
     print("Loading embedding model...")
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL, model_kwargs={'device': 'cpu'})
+    
     if not os.path.exists(DB_FAISS_PATH):
         os.makedirs(DB_FAISS_PATH)
+        
     print("Creating and saving master FAISS vector store...")
     db = FAISS.from_documents(all_docs, embeddings)
     db.save_local(DB_FAISS_PATH)
@@ -163,4 +211,5 @@ def create_master_vector_db():
 
 
 if __name__ == '__main__':
+    # To run this script, execute `python -m scripts.ingest` from the project root.
     create_master_vector_db()
