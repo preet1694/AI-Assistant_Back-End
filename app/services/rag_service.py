@@ -32,7 +32,7 @@ def get_rag_chain():
         allow_dangerous_deserialization=True
     )
     
-    retriever = db.as_retriever(search_kwargs={'k': 5})
+    retriever = db.as_retriever(search_kwargs={'k': 35})
 
     llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", google_api_key=settings.GOOGLE_API_KEY)
 
