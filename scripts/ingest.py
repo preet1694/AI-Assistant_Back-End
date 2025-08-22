@@ -84,15 +84,15 @@ def parse_timetable_from_excel(file_path: str, division: str) -> List[Document]:
         pd.set_option('display.max_rows', None)
         pd.set_option('display.max_columns', None)
         print("\n--- Raw DataFrame from Excel ---")
-        print(df)
+        # print(df)
         print("-----------------------------------\n")
 
         # Clean column names
         df.columns = df.columns.str.strip()
-        print(df.columns);
+        # print(df.columns);
         # Identify day and time columns
         day_column = "Day" if '' in df.columns else df.columns[1]
-        time_columns = [col for col in df.columns if re.match(r'\d', str(col))]
+        time_columns = [col for col in df.columns if re.match(r'\d{1,2}:\d{2}', str(col))]
         
         print(f"Detected day column: {day_column}")
         print(f"Detected time columns: {time_columns}")
@@ -116,7 +116,7 @@ def parse_timetable_from_excel(file_path: str, division: str) -> List[Document]:
                         if line:
                             content = (f"Timetable Information. For Division {division} on {day}, "
                                        f"during the {time_col} slot, the schedule is: {line}.")
-                            print(content)
+                            # print(content)
                             documents.append(Document(page_content=content, metadata={"source": os.path.basename(file_path), "record_type": "timetable_entry"}))
         
         print(f"Successfully created {len(documents)} timetable documents for Division {division}.")

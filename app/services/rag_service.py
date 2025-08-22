@@ -34,7 +34,7 @@ def get_rag_chain():
     
     retriever = db.as_retriever(search_kwargs={'k': 35})
 
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", google_api_key=settings.GOOGLE_API_KEY)
+    llm = ChatGoogleGenerativeAI(model="gemini-2.5-pro", google_api_key=settings.GOOGLE_API_KEY)
 
     prompt_template = """
     You are a helpful college assistant. Based ONLY on the provided context, please answer the user's question accurately.
