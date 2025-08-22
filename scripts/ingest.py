@@ -2,7 +2,6 @@ import os
 import re
 import sys
 import fitz
-import camelot
 import pandas as pd
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -71,96 +70,59 @@ def get_batch_for_student(exam_no: str, allocations: List[Dict]) -> Tuple[Option
         return None, None
     return None, None
 
-def parse_timetable_with_camelot(file_path: str, division: str) -> List[Document]:
+def parse_timetable_from_excel(file_path: str, division: str) -> List[Document]:
     """
-    Parses a timetable PDF using the Camelot library for robust table extraction.
-    This corrected version uses a more flexible logic to handle variations in
-    table layouts and headers, and fixes the pandas ambiguity error by using
-    index-based access instead of label-based access.
+    Parses a timetable from an Excel file into a list of Documents.
+    This method is more robust for structured tabular data.
     """
-    print(f"Parsing timetable for Division {division} with Camelot from: {file_path}")
+    print(f"Parsing timetable for Division {division} from Excel: {file_path}")
     documents = []
     try:
-        tables = camelot.read_pdf(file_path, pages='1', flavor='lattice')
-        if not tables:
-            print(f"Warning: Camelot could not find any tables in {file_path}")
+        df = pd.read_excel(file_path, header=6)
+        
+        # --- DEBUGGING: Print the entire DataFrame to see its contents ---
+        pd.set_option('display.max_rows', None)
+        pd.set_option('display.max_columns', None)
+        print("\n--- Raw DataFrame from Excel ---")
+        print(df)
+        print("-----------------------------------\n")
+
+        # Clean column names
+        df.columns = df.columns.str.strip()
+        print(df.columns);
+        # Identify day and time columns
+        day_column = "Day" if '' in df.columns else df.columns[1]
+        time_columns = [col for col in df.columns if re.match(r'\d', str(col))]
+        
+        print(f"Detected day column: {day_column}")
+        print(f"Detected time columns: {time_columns}")
+
+        if not time_columns:
+            print("Error: Could not find time columns in the Excel file.")
             return []
-
-        df = tables[0].df
-
-        # --- Corrected Header and Data Detection Logic ---
-
-        # First, clean the entire dataframe to handle multi-line cells
-        # Use .map() instead of the deprecated .applymap()
-        df_cleaned = df.map(lambda x: str(x).replace('\n', ' ').strip())
-
-        data_start_index = -1
-        days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-
-        # Find the first row that contains a day of the week, which marks the start of the actual data
-        for i, row in df_cleaned.iterrows():
-            # Check the actual string value in the first cell of the row
-            if any(day in row.iloc[0] for day in days_of_week):
-                data_start_index = i
-                break
-
-        if data_start_index == -1:
-            print(f"Error: Could not find the starting data row (e.g., 'Monday') for Division {division}.")
-            return []
-
-        # The header is the row right before the data starts
-        header_row = df_cleaned.iloc[data_start_index - 1]
-        data_df = df_cleaned.iloc[data_start_index:]
-
-        # Iterate through the data rows
-        for _, row in data_df.iterrows():
-            day = row.iloc[0]
-
-            # Special handling for "Saturday" rows which contain multi-line project data
-            if "Saturday" in day:
-                # Use a regex to find all project entries in the row
-                project_pattern = re.compile(r'([EF]\d-PROJECT-II-[A-Z]+)\s+(SW\d+)', re.IGNORECASE)
-                full_row_text = ' '.join(row.iloc[1:].astype(str))
-                project_matches = project_pattern.findall(full_row_text)
-
-                for project, room in project_matches:
-                    content = (
-                        f"Timetable Information. Type: Lab. "
-                        f"For Division {division} on Saturday, the schedule is a Project. "
-                        f"Details: {project} in room {room}."
-                    )
-                    doc = Document(
-                        page_content=content,
-                        metadata={"source": os.path.basename(file_path), "record_type": "timetable_entry"}
-                    )
-                    documents.append(doc)
-            else: # Normal weekday processing
-                # Skip any rows that are not actual days
-                if not any(d in day for d in days_of_week):
-                    continue
-
-                # Iterate through the cells of the row, starting from the second cell (index 1)
-                for i in range(1, len(row)):
-                    details = row.iloc[i]
-                    time = header_row.iloc[i] # Get corresponding time from the header row
-
-                    if details and time: # Ensure both details and time slot are present
-                        session_type = "Lab" if re.search(r'[EF]\d-', details) else "Lecture"
-                        content = (
-                            f"Timetable Information. Type: {session_type}. "
-                            f"For Division {division} on {day}, during the {time} slot, "
-                            f"the schedule is: {details}."
-                        )
-                        doc = Document(
-                            page_content=content,
-                            metadata={"source": os.path.basename(file_path), "record_type": "timetable_entry"}
-                        )
-                        documents.append(doc)
-
+            
+        for _, row in df.iterrows():
+            day = row[day_column]
+            if not isinstance(day, str) or not day.strip():
+                # --- DEBUGGING: Show which day is being skipped and why ---
+                print(f"Skipping row with day: {day}")
+                continue
+            
+            for time_col in time_columns:
+                cell_content = row[time_col]
+                if pd.notna(cell_content):
+                    for line in str(cell_content).split('\n'):
+                        line = line.strip()
+                        if line:
+                            content = (f"Timetable Information. For Division {division} on {day}, "
+                                       f"during the {time_col} slot, the schedule is: {line}.")
+                            print(content)
+                            documents.append(Document(page_content=content, metadata={"source": os.path.basename(file_path), "record_type": "timetable_entry"}))
+        
         print(f"Successfully created {len(documents)} timetable documents for Division {division}.")
         return documents
     except Exception as e:
-        print(f"An error occurred while parsing timetable {file_path} with Camelot: {e}")
+        print(f"An error occurred while parsing Excel timetable {file_path}: {e}")
         return []
 
 
@@ -182,7 +144,7 @@ def create_master_vector_db():
     """
     Orchestrates the entire data ingestion process:
     1. Loads and enriches student data.
-    2. Parses timetables using Camelot.
+    2. Parses timetables using the new Excel files.
     3. Chunks the syllabus.
     4. Creates and saves a FAISS vector store.
     """
@@ -205,9 +167,9 @@ def create_master_vector_db():
         all_docs.append(doc)
     print(f"Successfully created {len(students)} enriched student profiles.")
 
-    # --- 2. Timetable Parsing (using Camelot) ---
-    all_docs.extend(parse_timetable_with_camelot(os.path.join(DATA_PATH, "7_IT_E_2025.pdf"), division="E"))
-    all_docs.extend(parse_timetable_with_camelot(os.path.join(DATA_PATH, "7_IT_F_2025.pdf"), division="F"))
+    # --- 2. Timetable Parsing (using the new Excel files) ---
+    all_docs.extend(parse_timetable_from_excel(os.path.join(DATA_PATH, "7_E.xlsx"), division="E"))
+    all_docs.extend(parse_timetable_from_excel(os.path.join(DATA_PATH, "7_F.xlsx"), division="F"))
     
     # --- 3. Syllabus Chunking ---
     all_docs.extend(chunk_syllabus_pdf(os.path.join(DATA_PATH, "BTech IT 2025-2029 Syllabus File.pdf")))
