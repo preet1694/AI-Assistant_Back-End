@@ -12,3 +12,4 @@ python-dotenv
 PyMuPDF
 google-generativeai
 Pillow
+camelot-py[cv]

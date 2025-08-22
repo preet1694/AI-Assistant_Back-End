@@ -20,7 +20,7 @@ class User(Base):
     # Columns to store specific student identifiers from the PDF
     exam_no = Column(String, unique=True, index=True, nullable=False)
     student_id = Column(String, unique=True, index=True, nullable=True)
-
+    
     # Relationship to the Attendance model
     attendance = relationship("Attendance", back_populates="user")
 

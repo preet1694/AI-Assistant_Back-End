@@ -115,27 +115,47 @@ def parse_timetable_with_camelot(file_path: str, division: str) -> List[Document
         # Iterate through the data rows
         for _, row in data_df.iterrows():
             day = row.iloc[0]
-            # Skip any rows that are not actual days
-            if not any(d in day for d in days_of_week):
-                continue
 
-            # Iterate through the cells of the row, starting from the second cell (index 1)
-            for i in range(1, len(row)):
-                details = row.iloc[i]
-                time = header_row.iloc[i] # Get corresponding time from the header row
+            # Special handling for "Saturday" rows which contain multi-line project data
+            if "Saturday" in day:
+                # Use a regex to find all project entries in the row
+                project_pattern = re.compile(r'([EF]\d-PROJECT-II-[A-Z]+)\s+(SW\d+)', re.IGNORECASE)
+                full_row_text = ' '.join(row.iloc[1:].astype(str))
+                project_matches = project_pattern.findall(full_row_text)
 
-                if details and time: # Ensure both details and time slot are present
-                    session_type = "Lab" if re.search(r'[EF]\d-', details) else "Lecture"
+                for project, room in project_matches:
                     content = (
-                        f"Timetable Information. Type: {session_type}. "
-                        f"For Division {division} on {day}, during the {time} slot, "
-                        f"the schedule is: {details}."
+                        f"Timetable Information. Type: Lab. "
+                        f"For Division {division} on Saturday, the schedule is a Project. "
+                        f"Details: {project} in room {room}."
                     )
                     doc = Document(
                         page_content=content,
                         metadata={"source": os.path.basename(file_path), "record_type": "timetable_entry"}
                     )
                     documents.append(doc)
+            else: # Normal weekday processing
+                # Skip any rows that are not actual days
+                if not any(d in day for d in days_of_week):
+                    continue
+
+                # Iterate through the cells of the row, starting from the second cell (index 1)
+                for i in range(1, len(row)):
+                    details = row.iloc[i]
+                    time = header_row.iloc[i] # Get corresponding time from the header row
+
+                    if details and time: # Ensure both details and time slot are present
+                        session_type = "Lab" if re.search(r'[EF]\d-', details) else "Lecture"
+                        content = (
+                            f"Timetable Information. Type: {session_type}. "
+                            f"For Division {division} on {day}, during the {time} slot, "
+                            f"the schedule is: {details}."
+                        )
+                        doc = Document(
+                            page_content=content,
+                            metadata={"source": os.path.basename(file_path), "record_type": "timetable_entry"}
+                        )
+                        documents.append(doc)
 
         print(f"Successfully created {len(documents)} timetable documents for Division {division}.")
         return documents
@@ -169,7 +189,7 @@ def create_master_vector_db():
     all_docs = []
     
     # --- 1. Enriched Student Profiles ---
-    students = load_student_data(os.path.join(DATA_PATH, "6_Roll Numbers.pdf"))
+    students = load_student_data(os.path.join(DATA_PATH, "7_Roll Numbers.pdf"))
     allocations = load_batch_allocations(os.path.join(DATA_PATH, "7_IT_2025_BATCH ALLOCATION.pdf"))
 
     print("\nCreating enriched documents for each student...")
