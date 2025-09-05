@@ -9,6 +9,8 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.docstore.document import Document
 from typing import List, Dict, Tuple, Optional
+from datetime import datetime, timedelta
+
 
 # Ensure the app module can be found
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -20,7 +22,6 @@ DB_FAISS_PATH = "vectorstore/"
 EMBEDDING_MODEL = 'BAAI/bge-large-en-v1.5'
 
 # --- Helper Functions ---
-
 def load_student_data(file_path: str) -> List[Dict]:
     """Parses the student roll numbers PDF."""
     print(f"Loading student data from: {file_path}")
@@ -32,10 +33,10 @@ def load_student_data(file_path: str) -> List[Dict]:
         matches = pattern.findall(text.replace('\n', ' '))
         for exam_no, student_id, name in matches:
             if "ITU" in student_id or "ECU" in student_id:
-                students.append({"exam_no": exam_no.strip(), "student_id": student_id.strip(), "name": name.strip().replace("  ", " ")})
+                students.append({"exam_no": exam_no.strip(), "student_id": student_id.strip(), "name": name.strip().replace("  ", " ")})
             else:
                 new_name = f"{student_id} {name}".strip()
-                students.append({"exam_no": exam_no.strip(), "student_id": "Not Available", "name": new_name.replace("  ", " ")})
+                students.append({"exam_no": exam_no.strip(), "student_id": "Not Available", "name": new_name.replace("  ", " ")})
         print(f"Successfully loaded {len(students)} student records.")
         return sorted(students, key=lambda x: int(x['exam_no'].replace("IT", "")))
     except Exception as e:
@@ -101,24 +102,67 @@ def parse_timetable_from_excel(file_path: str, division: str) -> List[Document]:
             print("Error: Could not find time columns in the Excel file.")
             return []
             
+        # Define the patterns with capturing groups for the parts you need
+        lab_pattern = r'([A-Z]\d)-([A-Z]+(?:-[A-Z]+)?)-([a-zA-Z]+)\s(.*)'
+        # project_lab_pattern = r'([A-Z]\d)-([A-Z]+-[A-Z]+)-([a-zA-Z]+)\s(.*)'
+        lecture_pattern = r'([A-Z]+)\n([A-Z]+)'
+        room_row = df[df[day_column] == "ROOM"]
+        lecture_room_no = None
+        if not room_row.empty:
+            # Extract the first non-empty value from the room row (after the day column)
+            for col in room_row.columns[2:]:
+                if pd.notna(room_row.iloc[0][col]):
+                    lecture_room_no = room_row.iloc[0][col]
+                    break
+        print(f"lecture_room_no: {lecture_room_no}")
         for _, row in df.iterrows():
             day = row[day_column]
             if not isinstance(day, str) or not day.strip():
                 # --- DEBUGGING: Show which day is being skipped and why ---
                 print(f"Skipping row with day: {day}")
                 continue
-            
             for time_col in time_columns:
+                start_time, finish_time = re.split(" TO ", time_col)
+                print(f"Start Time: {start_time}, Finish Time: {finish_time}")
+                
+            
                 cell_content = row[time_col]
                 if pd.notna(cell_content):
-                    for line in str(cell_content).split('\n'):
-                        line = line.strip()
-                        if line:
-                            content = (f"Timetable Information. For Division {division} on {day}, "
-                                       f"during the {time_col} slot, the schedule is: {line}.")
-                            # print(content)
-                            documents.append(Document(page_content=content, metadata={"source": os.path.basename(file_path), "record_type": "timetable_entry"}))
-        
+                    # Find all matches of either pattern in the cell content
+                    # re.M flag allows ^ and $ to match at the start/end of a line
+                    print(cell_content)
+                    matches = re.findall(f'{lab_pattern}|{lecture_pattern}', str(cell_content), re.M)
+                    print(matches)
+                    for match in matches:
+                        # Unpack the tuple from findall. It will have empty strings for unmatched groups
+                        lab_batch, lab_subject, lab_faculty, lab_location, lecture_subject, lecture_faculty = match
+                        
+                        if lab_subject:
+                            # It's a lab session
+                            print(f"Detected a lab session: Batch={lab_batch}, Subject={lab_subject}, Faculty={lab_faculty}, Location={lab_location}")
+                            item_content = f"Batch: {lab_batch}, Subject: {lab_subject}, Faculty: {lab_faculty}, Lab Location: {lab_location}"
+                            finish_time_obj = datetime.strptime(finish_time,'%I:%M')
+                            temp_finish_time = finish_time_obj + timedelta(hours=1)
+                            new_finish_time = temp_finish_time.strftime('%H:%M')
+
+
+                        elif lecture_subject:
+                            # It's a lecture session
+                            print(f"Detected a lecture session: Subject={lecture_subject}, Faculty={lecture_faculty}")
+                            item_content = f"Subject: {lecture_subject}, Faculty: {lecture_faculty}, Room No:{lecture_room_no}"
+                            new_finish_time = finish_time
+                        else:
+                            # Handle other content or skip
+                            # The code you provided shows 'Other content: 26'
+                            # You may need a different pattern or a check here
+                            print(f"Other content found and skipped.")
+                            continue
+
+                        content = (f"For {day}, "
+                                   f"during the {start_time} TO {new_finish_time} slot, the schedule is: {item_content}.")
+                        print(content)
+                        documents.append(Document(page_content=content, metadata={"source": os.path.basename(file_path), "record_type": "timetable_entry"}))
+                        
         print(f"Successfully created {len(documents)} timetable documents for Division {division}.")
         return documents
     except Exception as e:
