@@ -9,7 +9,6 @@ from deep_translator import GoogleTranslator
 import io
 import numpy as np
 import eventlet
-import soundfile as sf
 import requests
 import json
 
@@ -54,10 +53,6 @@ except Exception as e:
 # A dictionary to store audio buffers for each session (client)
 session_data = {}
 TARGET_SAMPLE_RATE = 16000 # The STT model's required sample rate
-
-# Voice Activity Detection (VAD) parameters
-SILENCE_THRESHOLD = 0.005 # A small RMS value indicates silence
-MIN_SILENCE_DUR = 16000 # 1 second of silence to end a phrase
 
 # URL of your FastAPI backend
 FASTAPI_URL = "http://127.0.0.1:8000/api/query"
@@ -105,9 +100,14 @@ def index():
 
         <div class="flex flex-col items-center justify-center space-y-6">
             <h2 class="text-xl font-semibold text-gray-800">Speech-to-Text</h2>
-            <button id="recordButton" class="bg-indigo-600 text-white font-semibold py-3 px-6 rounded-full shadow-lg hover:bg-indigo-700 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50">
-                Start Recording
-            </button>
+            <div class="flex space-x-4">
+                <button id="recordButton" class="bg-indigo-600 text-white font-semibold py-3 px-6 rounded-full shadow-lg hover:bg-indigo-700 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50">
+                    Start Recording
+                </button>
+                <button id="cancelButton" class="bg-gray-600 text-white font-semibold py-3 px-6 rounded-full shadow-lg hover:bg-gray-700 transition-colors focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-opacity-50 hidden">
+                    Cancel Recording
+                </button>
+            </div>
             <div id="status" class="text-lg font-medium text-gray-700">Ready</div>
         </div>
 
@@ -145,6 +145,7 @@ def index():
 
     <script>
         const recordButton = document.getElementById('recordButton');
+        const cancelButton = document.getElementById('cancelButton');
         const ttsButton = document.getElementById('ttsButton');
         const ttsInput = document.getElementById('ttsInput');
         const statusElement = document.getElementById('status');
@@ -169,6 +170,12 @@ def index():
             statusElement.textContent = 'Error';
         }
 
+        function resetOutputs() {
+            transcriptionOutput.innerHTML = '<p>Transcription will appear here...</p>';
+            englishTranslationOutput.innerHTML = '<p>English translation will appear here...</p>';
+            translationOutput.innerHTML = '<p>Final translation will appear here...</p>';
+        }
+
         function playNextAudio() {
             if (ttsAudioQueue.length > 0 && !isPlaying) {
                 isPlaying = true;
@@ -191,6 +198,7 @@ def index():
                 recordButton.classList.remove('bg-red-600', 'hover:bg-red-700');
                 recordButton.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
                 statusElement.textContent = "Stopping...";
+                cancelButton.classList.add('hidden');
                 if (socket) {
                     socket.emit('end_stream');
                     scriptProcessor.disconnect();
@@ -217,7 +225,10 @@ def index():
                         recordButton.textContent = "Stop Recording";
                         recordButton.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
                         recordButton.classList.add('bg-red-600', 'hover:bg-red-700');
+                        cancelButton.classList.remove('hidden');
                         transcriptionOutput.innerHTML = '<p>Listening...</p>';
+                        englishTranslationOutput.innerHTML = '<p></p>';
+                        translationOutput.innerHTML = '<p></p>';
 
                         scriptProcessor.onaudioprocess = function(event) {
                             const inputBuffer = event.inputBuffer.getChannelData(0);
@@ -257,6 +268,23 @@ def index():
                     console.error('Microphone access denied:', err);
                     displayError('Microphone access was denied. Please allow microphone permissions in your browser settings.');
                 }
+            }
+        });
+
+        cancelButton.addEventListener('click', () => {
+            if (isRecording) {
+                isRecording = false;
+                recordButton.textContent = "Start Recording";
+                recordButton.classList.remove('bg-red-600', 'hover:bg-red-700');
+                recordButton.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
+                statusElement.textContent = "Ready";
+                cancelButton.classList.add('hidden');
+                if (socket) {
+                    socket.emit('cancel_stream');
+                    scriptProcessor.disconnect();
+                    audioContext.close();
+                }
+                resetOutputs();
             }
         });
 
@@ -371,175 +399,111 @@ def handle_tts_request(data):
 def handle_connect():
     """Initializes the audio buffer for the new session."""
     session_id = request.sid
-    # Initialize a dictionary for the session data instead of a raw numpy array
     session_data[session_id] = {
-        'buffer': np.array([], dtype=np.float32),
-        'silence_count': 0
+        'buffer': np.array([], dtype=np.float32)
     }
     print(f"Client connected with session ID: {session_id}")
 
 @socketio.on('audio_chunk')
 def handle_audio_chunk(data):
-    """Handles incoming raw audio chunks and processes them."""
+    """Handles incoming raw audio chunks and appends them to the buffer."""
     session_id = request.sid
     
-    if stt_processor is None or stt_model is None:
-        emit('transcription', {'original_text': 'STT model not loaded on server.', 'translated_text': ''}, room=session_id)
+    if session_id not in session_data:
         return
 
     chunk = np.frombuffer(data, dtype=np.float32)
-    rms = np.sqrt(np.mean(chunk**2))
-
-    if rms > SILENCE_THRESHOLD:
-        session_data[session_id]['silence_count'] = 0
-        session_data[session_id]['buffer'] = np.concatenate((session_data[session_id]['buffer'], chunk))
-    else:
-        # If silence is detected, increment the silence counter
-        session_data[session_id]['silence_count'] += len(chunk)
-
-    if session_data[session_id]['silence_count'] >= MIN_SILENCE_DUR and len(session_data[session_id]['buffer']) > 0:
-        # If a period of silence is detected and there's audio in the buffer, process it
-        try:
-            audio_input = session_data[session_id]['buffer']
-            
-            # Step 1: STT (Gujarati speech to Gujarati text)
-            input_values = stt_processor(
-                audio_input, sampling_rate=TARGET_SAMPLE_RATE, return_tensors="pt"
-            ).input_values
-            
-            logits = stt_model(input_values).logits
-            predicted_ids = torch.argmax(logits, dim=-1)
-            gujarati_transcription = stt_processor.decode(predicted_ids[0], skip_special_tokens=True)
-            print(f"STT Output (Devanagari): {gujarati_transcription}")
-            
-            # Transliterate from Devanagari to Gujarati script
-            transliterated_gujarati_text = transliterate(
-                gujarati_transcription,
-                sanscript.DEVANAGARI,
-                sanscript.GUJARATI
-            )
-            print(f"Transliterated Text (Gujarati): {transliterated_gujarati_text}")
-
-            # Step 2: Gujarati Text to English Text
-            if guj_en_translator:
-                en_translation = guj_en_translator.translate(transliterated_gujarati_text)
-            else:
-                en_translation = "Translation model not loaded."
-            
-            print(f"English Translation: {en_translation}")
-                
-            # NEW Step 2.5: Get response from AI assistant
-            llm_response_en = get_llm_response(en_translation)
-            print(f"AI Assistant Response (English): {llm_response_en}")
-
-            # Step 3: English Text to Gujarati Text (round-trip)
-            if en_guj_translator:
-                gujarati_translation = en_guj_translator.translate(llm_response_en)
-            else:
-                gujarati_translation = "Translation model not loaded."
-
-            print(f"Final Gujarati Translation: {gujarati_translation}")
-
-            # Emit transcription results back to the client
-            emit('transcription', {
-                'original_text': transliterated_gujarati_text,
-                'english_text': en_translation,
-                'translated_text': gujarati_translation
-            }, room=session_id)
-            
-            # Reset the buffer for the next phrase
-            session_data[session_id]['buffer'] = np.array([], dtype=np.float32)
-            session_data[session_id]['silence_count'] = 0
-
-            # NEW Step 4: TTS of the AI assistant's response
-            if tts_tokenizer and tts_model:
-                if gujarati_translation and gujarati_translation.strip() and "error" not in gujarati_translation.lower():
-                    inputs = tts_tokenizer(gujarati_translation, return_tensors="pt")
-                    
-                    if inputs.input_ids.numel() > 0:
-                        inputs.input_ids = inputs.input_ids.to(torch.long)
-                        inputs.attention_mask = inputs.attention_mask.to(torch.long)
-                        inputs = {key: value.to("cuda") for key, value in inputs.items()}
-                        
-                        with torch.no_grad():
-                            speech_tensor = tts_model(**inputs).waveform
-
-                        speech_np = speech_tensor.cpu().numpy().squeeze()
-                        buffer = io.BytesIO()
-                        sf.write(buffer, speech_np, tts_model.config.sampling_rate, format='mp3')
-                        buffer.seek(0)
-                        socketio.emit('tts_response', {'audio_data': buffer.getvalue()}, room=session_id)
-                    else:
-                        print(f"Skipping TTS: Tokenizer produced no tokens for text: '{gujarati_translation}'")
-                else:
-                    print(f"Skipping TTS: Invalid or empty translation: '{gujarati_translation}'")
-
-        except Exception as e:
-            print(f"Transcription/translation error for session {session_id}: {e}")
-            emit('transcription', {
-                'original_text': 'An error occurred during transcription.',
-                'translated_text': ''
-            }, room=session_id)
-            # Reset buffer on error
-            session_data[session_id]['buffer'] = np.array([], dtype=np.float32)
-            session_data[session_id]['silence_count'] = 0
-    else:
-        # If there is speech in the buffer but not enough silence to process,
-        # continue to accumulate audio
-        pass
-
+    session_data[session_id]['buffer'] = np.concatenate((session_data[session_id]['buffer'], chunk))
 
 @socketio.on('end_stream')
 def handle_end_stream():
-    """Handles the end of the audio stream and finalizes transcription."""
+    """Handles the end of the audio stream and processes the entire buffer."""
     session_id = request.sid
     
-    if session_id in session_data and len(session_data[session_id]['buffer']) > 0:
-        try:
-            audio_input = session_data[session_id]['buffer']
-            
-            input_values = stt_processor(
-                audio_input, sampling_rate=TARGET_SAMPLE_RATE, return_tensors="pt"
-            ).input_values
-            
-            logits = stt_model(input_values).logits
-            predicted_ids = torch.argmax(logits, dim=-1)
-            gujarati_transcription = stt_processor.decode(predicted_ids[0], skip_special_tokens=True)
-            
-            transliterated_gujarati_text = transliterate(
-                gujarati_transcription,
-                sanscript.DEVANAGARI,
-                sanscript.GUJARATI
-            )
-            
-            if guj_en_translator:
-                en_translation = guj_en_translator.translate(transliterated_gujarati_text)
-            else:
-                en_translation = "Translation model not loaded."
-            
-            # NEW Step: Get response from AI assistant
-            llm_response_en = get_llm_response(en_translation)
+    if session_id not in session_data or len(session_data[session_id]['buffer']) == 0:
+        emit('transcription', {
+            'original_text': 'No audio recorded.',
+            'english_text': '',
+            'translated_text': ''
+        }, room=session_id)
+        if session_id in session_data:
+            del session_data[session_id]
+        print(f"Stream ended, no audio for session {session_id}")
+        return
+    
+    if stt_processor is None or stt_model is None:
+        emit('transcription', {'original_text': 'STT model not loaded on server.', 'english_text': '', 'translated_text': ''}, room=session_id)
+        if session_id in session_data:
+            del session_data[session_id]
+        return
 
-            if en_guj_translator:
-                gujarati_translation = en_guj_translator.translate(llm_response_en)
-            else:
-                gujarati_translation = "Translation model not loaded."
-            
-            emit('transcription', {
-                'original_text': transliterated_gujarati_text,
-                'english_text': en_translation,
-                'translated_text': gujarati_translation
-            }, room=session_id)
-        except Exception as e:
-            print(f"Final transcription/translation error for session {session_id}: {e}")
-            emit('transcription', {
-                'original_text': 'Final transcription failed.',
-                'translated_text': ''
-            }, room=session_id)
+    try:
+        audio_input = session_data[session_id]['buffer']
+        
+        # Step 1: STT (Gujarati speech to Gujarati text)
+        input_values = stt_processor(
+            audio_input, sampling_rate=TARGET_SAMPLE_RATE, return_tensors="pt"
+        ).input_values
+        
+        logits = stt_model(input_values).logits
+        predicted_ids = torch.argmax(logits, dim=-1)
+        gujarati_transcription = stt_processor.decode(predicted_ids[0], skip_special_tokens=True)
+        print(f"STT Output (Devanagari): {gujarati_transcription}")
+        
+        # Transliterate from Devanagari to Gujarati script
+        transliterated_gujarati_text = transliterate(
+            gujarati_transcription,
+            sanscript.DEVANAGARI,
+            sanscript.GUJARATI
+        )
+        print(f"Transliterated Text (Gujarati): {transliterated_gujarati_text}")
 
+        # Step 2: Gujarati Text to English Text
+        if guj_en_translator:
+            en_translation = guj_en_translator.translate(transliterated_gujarati_text)
+        else:
+            en_translation = "Translation model not loaded."
+        
+        print(f"English Translation: {en_translation}")
+            
+        # Step 2.5: Get response from AI assistant
+        llm_response_en = get_llm_response(en_translation)
+        print(f"AI Assistant Response (English): {llm_response_en}")
+
+        # Step 3: English Text to Gujarati Text (round-trip)
+        if en_guj_translator:
+            gujarati_translation = en_guj_translator.translate(llm_response_en)
+        else:
+            gujarati_translation = "Translation model not loaded."
+
+        print(f"Final Gujarati Translation: {gujarati_translation}")
+
+        # Emit transcription results back to the client
+        emit('transcription', {
+            'original_text': transliterated_gujarati_text,
+            'english_text': en_translation,
+            'translated_text': gujarati_translation
+        }, room=session_id)
+
+    except Exception as e:
+        print(f"Transcription/translation error for session {session_id}: {e}")
+        emit('transcription', {
+            'original_text': 'An error occurred during transcription.',
+            'english_text': '',
+            'translated_text': ''
+        }, room=session_id)
+    
     if session_id in session_data:
         del session_data[session_id]
     print(f"Stream ended, buffer for session {session_id} cleared.")
+
+@socketio.on('cancel_stream')
+def handle_cancel_stream():
+    """Clears the buffer without processing."""
+    session_id = request.sid
+    if session_id in session_data:
+        del session_data[session_id]
+    print(f"Stream cancelled, buffer for session {session_id} cleared.")
 
 @socketio.on('disconnect')
 def handle_disconnect():
