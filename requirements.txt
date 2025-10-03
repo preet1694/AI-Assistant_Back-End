@@ -13,3 +13,16 @@ PyMuPDF
 google-generativeai
 Pillow
 camelot-py[cv]
+flask-socketio
+eventlet
+soundfile
+torch
+transformers
+indic-transliteration
+deep_translator
+numpy
+flask-sock
+faster-whisper
+pyaudio
+gevent
+gevent-websocket
