@@ -517,3 +517,4 @@ if __name__ == '__main__':
     print("Starting the real-time transcription server...")
     print("Please go to http://127.0.0.1:5001 in your web browser.")
     socketio.run(app, debug=True, port=5001)
+    
