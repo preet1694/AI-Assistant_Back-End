@@ -9,12 +9,16 @@ This README explains how to set up and run the entire project from scratch.
 Create and activate a virtual environment to keep dependencies isolated.
 
 ### **Windows**
-    python -m venv venv
-    venv\Scripts\activate
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
 
 ### **macOS / Linux**
-    python3 -m venv venv
-    source venv/bin/activate
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
 
 ---
 
@@ -22,36 +26,60 @@ Create and activate a virtual environment to keep dependencies isolated.
 
 Once the virtual environment is activated, install all dependencies using:
 
-    pip install -r requirements.txt
-
-This will install everything listed in **requirements.txt**.
-
----
-
-## ✅ 3. Running the Project
-
-This project uses **two Python scripts** that must run **in parallel**.
-
-Open **two separate terminal tabs**.
+```bash
+pip install -r requirements.txt
+```
 
 ---
 
-### **🟦 Terminal Tab 1 – Run `main.py`**
+## ✅ 3. Run Initial Setup Scripts (Important)
 
-    python main.py
+Before running the main application, run these two scripts first:
+
+### **1. Setup the database**
+```bash
+python scripts/database_setup.py
+```
+
+### **2. Ingest required data**
+```bash
+python scripts/ingest.py
+```
+
+These scripts prepare your database and load the required data.
 
 ---
 
-### **🟩 Terminal Tab 2 – Run `SpeechToSpeech.py`**
+## ✅ 4. Running the Project (Two Terminals Needed)
 
-    python SpeechToSpeech.py
+This project uses **two Python scripts** that must run **in parallel**.  
+Open **two separate terminal tabs** after the setup scripts have finished.
 
 ---
 
-## 🔄 4. Keep Both Scripts Running
+### 🟦 Terminal Tab 1 — Run `main.py`
+```bash
+python main.py
+```
 
-Both terminals must remain open.  
-If any one stops, the system will not work correctly.
+---
+
+### 🟩 Terminal Tab 2 — Run `SpeechToSpeech.py`
+```bash
+python SpeechToSpeech.py
+```
+
+---
+
+## 🌐 5. Open the Web Interface
+
+After **both** scripts are running, open this URL in your browser:
+
+```
+http://127.0.0.1:5001
+```
+
+This is where you can interact with the project.
 
 ---
 
@@ -59,5 +87,3 @@ If any one stops, the system will not work correctly.
 
 Your project is now running successfully.  
 Keep both terminals active and enjoy using the application.
-
- 
