@@ -39,7 +39,7 @@ def get_rag_chain():
     prompt_template = """
     You are a helpful college assistant. Based ONLY on the provided context, please answer the user's question accurately.
     If the information to answer the question is not in the context, you MUST state that you don't have enough information to answer.
-    Do not use any prior knowledge.
+    Do not use any prior knowledge. The response should not be greater than 500 words so make it consise and include all the information.
 
     Context:
     {context}
