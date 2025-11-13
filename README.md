@@ -32,7 +32,20 @@ pip install -r requirements.txt
 
 ---
 
-## ✅ 3. Run Initial Setup Scripts (Important)
+## ✅ 3. Create a `.env` File (Important)
+
+In the **root folder**, create a file named **`.env`**  
+and add your Google API key in the following format:
+
+```env
+GOOGLE_API_KEY="Your API Key"
+```
+
+This key is required for the project to run properly.
+
+---
+
+## ✅ 4. Run Initial Setup Scripts
 
 Before running the main application, run these two scripts first:
 
@@ -50,7 +63,7 @@ These scripts prepare your database and load the required data.
 
 ---
 
-## ✅ 4. Running the Project (Two Terminals Needed)
+## ✅ 5. Running the Project (Two Terminals Needed)
 
 This project uses **two Python scripts** that must run **in parallel**.  
 Open **two separate terminal tabs** after the setup scripts have finished.
@@ -71,7 +84,7 @@ python SpeechToSpeech.py
 
 ---
 
-## 🌐 5. Open the Web Interface
+## 🌐 6. Open the Web Interface
 
 After **both** scripts are running, open this URL in your browser:
 
